@@ -1,0 +1,7 @@
+# data
+*.gz
+*.idx3-ubyte
+*.idx1-ubyte
+
+# pycache
+__pycache__/
