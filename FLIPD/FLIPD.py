@@ -36,7 +36,7 @@ class FLIPD():
         """
         
         mean, std = self.get_mean_std(t_0, x)
-        d = self.get_total_dimension(x)
+        d = x.shape[1] 
         
         score = self.score_net(t_0, mean, y)
         
