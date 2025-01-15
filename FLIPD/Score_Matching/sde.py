@@ -4,7 +4,7 @@ import torch
 def batch_mul(a, b):
     # PyTorch will automatically broadcast the shape of `a` to match `b`
     # so no need to manually unsqueeze `a`. Just ensure that `a` is 1D (or scalar) and `b` is 4D
-    return a[..., None, None, None] * b  # Efficient broadcasting
+    return a * b  # Efficient broadcasting
 
 class SDE_Wrapper(ABC): 
     def __init__(self, discretization_steps): 
