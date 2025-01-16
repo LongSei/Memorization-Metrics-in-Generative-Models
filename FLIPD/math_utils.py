@@ -51,24 +51,33 @@ def compute_gradient(score_net, t, x, y):
     
     return grad_x
 
-def compute_trace_gradient(grad_x): 
+def compute_trace_gradient(grad_x, use_hutch=False, num_queries=100):
     """
     Compute the trace of the gradient of the score network.
     
     Args:
-        grad_x (torch.Tensor): Gradient of the score network with respect to x.
+        grad_x (torch.Tensor): Gradient of the score network with respect to x, shape (batch_size, channels, H, W).
+        use_hutch (bool): Whether to use the Hutch++ algorithm for trace estimation.
+        num_queries (int): Number of matrix-vector products for Hutch++ if used.
         
     Returns:
-        trace (torch.Tensor): Trace of the gradient of the score network.
+        trace (torch.Tensor): Trace of the gradient of the score network for each batch and channel.
     """
-    batch_size = grad_x.shape[0]
-    channels = grad_x.shape[1]
-    
-    # each trace got (channel) value
-    trace = torch.zeros(batch_size, channels)
-    
-    for batch in range(batch_size): 
-        for channel in range(channels): 
-            # trace[batch, channel] = simple_hutchplusplus(grad_x[batch, channel], num_queries=1000)
-            trace[batch, channel] = torch.trace(grad_x[batch, channel])
+    batch_size, channels, H, W = grad_x.shape
+
+    # Initialize a tensor to store trace values
+    trace = torch.zeros(batch_size, channels, device=grad_x.device)
+
+    if use_hutch:
+        # Hutch++ estimation (for large matrices)
+        for batch in range(batch_size):
+            for channel in range(channels):
+                A = grad_x[batch, channel].view(H * W, H * W)  # Reshape to square matrix
+                trace[batch, channel] = simple_hutchplusplus(A, num_queries=num_queries)
+    else:
+        # Direct trace computation (sum of diagonals)
+        for batch in range(batch_size):
+            for channel in range(channels):
+                trace[batch, channel] = grad_x[batch, channel].diagonal(offset=0, dim1=-2, dim2=-1).sum()
+
     return trace

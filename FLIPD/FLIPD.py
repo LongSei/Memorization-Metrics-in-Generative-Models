@@ -36,7 +36,7 @@ class FLIPD():
         """
         
         mean, std = self.get_mean_std(t_0, x)
-        d = x.shape[1] 
+        d = self.get_total_dimension(x)
         
         score = self.score_net(t_0, mean, y)
         
@@ -46,6 +46,6 @@ class FLIPD():
         
         # Compute the FLIPD score
         flipd_score = d + std**2 * (score_trace + score_norm)
-        return flipd_score
+        return flipd_score, [std, score, score_jacobian, score_trace, score_norm]
 
         
