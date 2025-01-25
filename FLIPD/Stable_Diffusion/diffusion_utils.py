@@ -1,5 +1,9 @@
 from diffusers import DDIMScheduler, StableDiffusionPipeline 
+from tqdm import tqdm
+import gc
 import torch
+import matplotlib.pyplot as plt 
+import numpy as np
 
 class DiffusionPipelineUtils(): 
     def __init__(self, 
@@ -35,9 +39,7 @@ class DiffusionPipelineUtils():
         Embed the prompt using the prompt encoder
         
         Args: 
-            prompt (str): prompt 
-            num_images_per_prompt (int): amount of image for each prompt
-            do_classifier_free_guidance (bool): do classifier free guidance
+            prompt (str): prompt to embed
             
         Returns: 
             unconditional_embedding (torch.Tensor)
@@ -55,6 +57,7 @@ class DiffusionPipelineUtils():
 
         return unconditional_embedding, conditional_embedding
     
+    @torch.no_grad()
     def get_mean_and_std(self, t, x):
         # Get the scheduler and extract noise schedule
         betas = self.pipeline.scheduler.betas  # Noise schedule
@@ -70,38 +73,19 @@ class DiffusionPipelineUtils():
         
         return mean_t, variance_t
     
+    @torch.no_grad()
     def prepare_latents(self, 
-                        t, 
-                        batch_size: int,
-                        num_channels_latents: int,
-                        latent_height: int,
-                        latent_width: int,
-                        latent_dtype: torch.dtype=torch.float32):
+                        t, latents: torch.Tensor):
         """
         Prepare latents for the diffusion process
 
         Args:
-            batch_size (int): batch size
-            num_images_per_prompt (int): number of images per prompt
-            num_channels_latents (int): number of channels of the latents
-            latent_height (int): height of the latent
-            latent_width (int): width of the latent
-            latent_dtype (torch.dtype): data type of the latent
+            t (torch.Tensor): time step
+            latents (torch.Tensor): latents for the diffusion process
 
         Returns:
             latent_model_input (torch.Tensor): latents for the model input
         """
-        latents = self.pipeline.prepare_latents(
-            batch_size * self.num_images_per_prompt,
-            num_channels_latents,
-            latent_height,
-            latent_width,
-            latent_dtype,
-            self.device,
-            None,
-            None
-        )
-
         latent_model_input = (
             torch.cat([latents, latents])
         )
@@ -112,6 +96,7 @@ class DiffusionPipelineUtils():
 
         return latent_model_input
     
+    @torch.no_grad()
     def prepare_prompt_input(self, prompt: str): 
         prompt_embeds = self.__prompt_embedding(prompt=prompt)
 
@@ -129,21 +114,11 @@ class DiffusionPipelineUtils():
         
         return input_prompt_embeds
     
+    @torch.no_grad()
     def get_noise_predict(self, 
                         prompt: str,
-                        t, 
-                        batch_size: int,
-                        num_channels_latents: int,
-                        latent_height: int,
-                        latent_width: int,
-                        latent_dtype: torch.dtype=torch.float32):
-        latent_model_input = self.prepare_latents(
-            t, batch_size=batch_size, 
-            num_channels_latents=num_channels_latents, 
-            latent_height=latent_height, 
-            latent_width=latent_width, 
-            latent_dtype=latent_dtype
-        )
+                        latent_model_input,
+                        t):
         
         input_prompt_embeds = self.prepare_prompt_input(
             prompt=prompt
@@ -160,7 +135,6 @@ class DiffusionPipelineUtils():
         return noise_predict
     
     def score_fn(self, t, x, guidance_scale: int, prompt: str): 
-        
         prompt_embeds = self.__prompt_embedding(prompt=prompt)
 
         single_prompt_embeds = prompt_embeds[0][:, :].clone().detach()
@@ -177,3 +151,60 @@ class DiffusionPipelineUtils():
         )[0].chunk(2)
         
         return noise_uncond + guidance_scale * (noise_pred_text - noise_uncond)
+
+    @torch.no_grad()
+    def sampling(self, 
+                prompt: str, 
+                num_inference_steps: int=100,
+                guidance_scale: int=3.5,
+                use_formula: bool=True): 
+        """
+        Perform sampling with epsilon formula
+
+        Args:
+            prompt (str): prompt
+            num_inference_steps (int, optional): amount of inference steps. Defaults to 100.
+            guidance_scale (int, optional): guidance scale . Defaults to 3.5.
+            use_formula (bool, optional): whether to use the formula. Defaults to True.
+            
+        Returns:
+            samples (torch.Tensor): samples
+        """
+        
+        self.pipeline.scheduler.set_timesteps(num_inference_steps, device=self.device)
+        
+        start_latents = torch.randn(1, 4, 64, 64, device=self.device)
+        start_latents *= self.pipeline.scheduler.init_noise_sigma
+        latents = start_latents.clone()
+        
+        for idx in tqdm(range(num_inference_steps)): 
+            t = self.pipeline.scheduler.timesteps[idx]
+            
+            latent_model_input = self.prepare_latents(
+                t, latents
+            )
+            
+            noise_predict = self.get_noise_predict(
+                prompt=prompt,
+                latent_model_input=latent_model_input,
+                t=t
+            )
+            
+            if self.do_classifier_free_guidance is True: 
+                noise_predict_uncond, noise_predict_text = noise_predict.chunk(2)
+                noise_predict = noise_predict_uncond + guidance_scale * (noise_predict_text - noise_predict_uncond)
+            
+            if use_formula is True: 
+                prev_t = max(1, t.item() - (1000 // num_inference_steps))  # t-1
+                alpha_t = self.pipeline.scheduler.alphas_cumprod[t.item()]
+                alpha_t_prev = self.pipeline.scheduler.alphas_cumprod[prev_t]
+                predicted_x0 = (latents - (1 - alpha_t).sqrt() * noise_predict) / alpha_t.sqrt()
+                direction_pointing_to_xt = (1 - alpha_t_prev).sqrt() * noise_predict
+                latents = alpha_t_prev.sqrt() * predicted_x0 + direction_pointing_to_xt
+            else: 
+                latents = self.pipeline.scheduler.step(noise_predict, t, latents).prev_sample
+            
+        images = self.pipeline.decode_latents(latents)
+        images = self.pipeline.numpy_to_pil(images)
+
+        return images
